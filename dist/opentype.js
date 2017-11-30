@@ -7846,8 +7846,7 @@ var roundSuper = function (v) {
     v += phase;
 
     // according to http://xgridfit.sourceforge.net/round.html
-    if (sign > 0 && v < 0) { return phase; }
-    if (sign < 0 && v > 0) { return -phase; }
+    if (v < 0) { return phase * sign; }
 
     return v * sign;
 };
@@ -8465,7 +8464,7 @@ execGlyph = function(glyph, prepState) {
 
 /*
 * Executes the hinting program for a component of a multi-component glyph
-* or of the glyph itself by a non-component glyph.
+* or of the glyph itself for a non-component glyph.
 */
 execComponent = function(glyph, state, xScale, yScale)
 {
@@ -8513,6 +8512,13 @@ execComponent = function(glyph, state, xScale, yScale)
 
     if (state.inhibitGridFit) { return; }
 
+    if (exports.DEBUG) {
+        console.log('PROCESSING GLYPH', state.stack);
+        for (var i$2 = 0; i$2 < pLen; i$2++) {
+            console.log(i$2, gZone[i$2].x, gZone[i$2].y);
+        }
+    }
+
     gZone.push(
         new HPoint(0, 0),
         new HPoint(Math.round(glyph.advanceWidth * xScale), 0)
@@ -8525,8 +8531,8 @@ execComponent = function(glyph, state, xScale, yScale)
 
     if (exports.DEBUG) {
         console.log('FINISHED GLYPH', state.stack);
-        for (var i$2 = 0; i$2 < pLen; i$2++) {
-            console.log(i$2, gZone[i$2].x, gZone[i$2].y);
+        for (var i$3 = 0; i$3 < pLen; i$3++) {
+            console.log(i$3, gZone[i$3].x, gZone[i$3].y);
         }
     }
 };
@@ -9288,7 +9294,8 @@ function SHZ(a, state) {
     for (var i = 0; i < pLen; i++)
     {
         p = z[i];
-        if (p !== rp) { fv.setRelative(p, p, d, pv); }
+        fv.setRelative(p, p, d, pv);
+        //if (p !== rp) fv.setRelative(p, p, d, pv);
     }
 }
 
@@ -9423,9 +9430,6 @@ function MIAP(round, state) {
     var pv = state.pv;
     var cv = state.cvt[n];
 
-    // TODO cvtcutin should be considered here
-    if (round) { cv = state.round(cv); }
-
     if (exports.DEBUG) {
         console.log(
             state.step,
@@ -9434,7 +9438,15 @@ function MIAP(round, state) {
         );
     }
 
-    fv.setRelative(p, HPZero, cv, pv);
+    var d = pv.distance(p, HPZero);
+
+    if (round) {
+        if (Math.abs(d - cv) < state.cvCutIn) { d = cv; }
+
+        d = state.round(d);
+    }
+
+    fv.setRelative(p, HPZero, d, pv);
 
     if (state.zp0 === 0) {
         p.xo = p.x;
@@ -9749,8 +9761,7 @@ function DELTAP123(b, state) {
 
     if (exports.DEBUG) { console.log(state.step, 'DELTAP[' + b + ']', n, stack); }
 
-    for (var i = 0; i < n; i++)
-    {
+    for (var i = 0; i < n; i++) {
         var pi = stack.pop();
         var arg = stack.pop();
         var appem = base + ((arg & 0xF0) >> 4);
@@ -10074,7 +10085,7 @@ function SDPVTL(a, state) {
     var p2 = state.z2[p2i];
     var p1 = state.z1[p1i];
 
-    if (exports.DEBUG) { console.log('SDPVTL[' + a + ']', p2i, p1i); }
+    if (exports.DEBUG) { console.log(state.step, 'SDPVTL[' + a + ']', p2i, p1i); }
 
     var dx;
     var dy;
@@ -11804,7 +11815,7 @@ var loca = { parse: parseLocaTable };
  */
 function loadFromFile(path, callback) {
     var fs = require('fs');
-    fs.readFile(path, function(err, buffer) {
+    fs.readFile(path, function (err, buffer) {
         if (err) {
             return callback(err.message);
         }
@@ -11819,22 +11830,39 @@ function loadFromFile(path, callback) {
  * @param  {Function} callback - The function to call when the font load completes
  */
 function loadFromUrl(url, callback) {
-    var request = new XMLHttpRequest();
-    request.open('get', url, true);
-    request.responseType = 'arraybuffer';
-    request.onload = function() {
-        if (request.response) {
-            return callback(null, request.response);
-        } else {
-            return callback('Font could not be loaded: ' + request.statusText);
-        }
-    };
+    var isNode$$1 = typeof window === 'undefined';
+    if (isNode$$1) {
+        var http = require('http');
 
-    request.onerror = function () {
-        callback('Font could not be loaded');
-    };
+        http.get(url, function (res) {
+            var data = []; // List of Buffer objects
+            res.on('data', function (chunk) {
+                data.push(chunk); // Append Buffer object
+            });
+            res.on('end', function () {
+                data = Buffer.concat(data); // Make one large Buffer of it
+                return callback(null, nodeBufferToArrayBuffer(data));
+            });
+        });
 
-    request.send();
+    } else {
+        var request = new XMLHttpRequest();
+        request.open('get', url, true);
+        request.responseType = 'arraybuffer';
+        request.onload = function () {
+            if (request.response) {
+                return callback(null, request.response);
+            } else {
+                return callback('Font could not be loaded: ' + request.statusText);
+            }
+        };
+
+        request.onerror = function () {
+            callback('Font could not be loaded');
+        };
+
+        request.send();
+    }
 }
 
 // Table Directory Entries //////////////////////////////////////////////
@@ -11852,7 +11880,7 @@ function parseOpenTypeTableEntries(data, numTables) {
         var checksum = parse.getULong(data, p + 4);
         var offset = parse.getULong(data, p + 8);
         var length = parse.getULong(data, p + 12);
-        tableEntries.push({tag: tag, checksum: checksum, offset: offset, length: length, compression: false});
+        tableEntries.push({ tag: tag, checksum: checksum, offset: offset, length: length, compression: false });
         p += 16;
     }
 
@@ -11880,8 +11908,10 @@ function parseWOFFTableEntries(data, numTables) {
             compression = false;
         }
 
-        tableEntries.push({tag: tag, offset: offset, compression: compression,
-            compressedLength: compLength, length: origLength});
+        tableEntries.push({
+            tag: tag, offset: offset, compression: compression,
+            compressedLength: compLength, length: origLength
+        });
         p += 20;
     }
 
@@ -11910,9 +11940,9 @@ function uncompressTable(data, tableEntry) {
         }
 
         var view = new DataView(outBuffer.buffer, 0);
-        return {data: view, offset: 0};
+        return { data: view, offset: 0 };
     } else {
-        return {data: data, offset: tableEntry.offset};
+        return { data: data, offset: tableEntry.offset };
     }
 }
 
@@ -11930,7 +11960,7 @@ function parseBuffer(buffer) {
 
     // Since the constructor can also be called to create new fonts from scratch, we indicate this
     // should be an empty font that we'll fill with our own data.
-    var font = new Font({empty: true});
+    var font = new Font({ empty: true });
 
     // OpenType fonts use big endian byte ordering.
     // We can't rely on typed array view types, because they operate with the endianness of the host computer.
@@ -11984,7 +12014,7 @@ function parseBuffer(buffer) {
                 font.tables.cmap = cmap.parse(table.data, table.offset);
                 font.encoding = new CmapEncoding(font.tables.cmap);
                 break;
-            case 'cvt ' :
+            case 'cvt ':
                 table = uncompressTable(data, tableEntry);
                 p = new parse.Parser(table.data, table.offset);
                 font.tables.cvt = p.parseShortList(tableEntry.length / 2);
@@ -11992,7 +12022,7 @@ function parseBuffer(buffer) {
             case 'fvar':
                 fvarTableEntry = tableEntry;
                 break;
-            case 'fpgm' :
+            case 'fpgm':
                 table = uncompressTable(data, tableEntry);
                 p = new parse.Parser(table.data, table.offset);
                 font.tables.fpgm = p.parseByteList(tableEntry.length);
@@ -12034,7 +12064,7 @@ function parseBuffer(buffer) {
                 font.tables.post = post.parse(table.data, table.offset);
                 font.glyphNames = new GlyphNames(font.tables.post);
                 break;
-            case 'prep' :
+            case 'prep':
                 table = uncompressTable(data, tableEntry);
                 p = new parse.Parser(table.data, table.offset);
                 font.tables.prep = p.parseByteList(tableEntry.length);
@@ -12126,9 +12156,9 @@ function parseBuffer(buffer) {
  * @param  {Function} callback - The callback.
  */
 function load(url, callback) {
-    var isNode$$1 = typeof window === 'undefined';
-    var loadFn = isNode$$1 ? loadFromFile : loadFromUrl;
-    loadFn(url, function(err, arrayBuffer) {
+    var isLocalFile = !url.match(/^http[s]?:\/\//g);
+    var loadFn = isLocalFile ? loadFromFile : loadFromUrl;
+    loadFn(url, function (err, arrayBuffer) {
         if (err) {
             return callback(err);
         }
